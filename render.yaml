@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: arjun-stock-screener
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: TWELVE_DATA_KEY
+        value: cc5706080270455db629d72dacf4dad6
+      - key: PYTHON_VERSION
+        value: 3.11.0
