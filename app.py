@@ -143,10 +143,10 @@ def score_stock(symbol):
               "fetch_time":datetime.now().strftime("%d %b %Y, %H:%M IST"),
               "error":None,"sector":"Unknown","industry":"Unknown"}
 
-    # Quote
-    q = td("quote",{"symbol":f"{sym}:NSE","interval":"1day"})
+    # Quote — Yahoo Finance
+    q = fetch_quote(sym)
     if not q or not q.get("close"):
-        result["error"]=f"No data for '{symbol}'. Try the NSE symbol directly."
+        result["error"]=f"No data for '{symbol}'. Check the company name."
         return result
 
     price = _s(q.get("close"))
@@ -154,63 +154,61 @@ def score_stock(symbol):
     result.update({
         "price":round(price,2),"prev_close":round(prev,2),
         "day_change_pct":round((price-prev)/prev*100,2) if prev else 0,
-        "name":q.get("name",sym),"exchange":"NSE"
+        "name":q.get("name",sym),"exchange":"NSE",
+        "sector":q.get("sector","Unknown"),
+        "industry":q.get("industry","Unknown"),
+        "pe_ratio":q.get("pe_ratio"),
+        "peg_ratio":q.get("peg_ratio"),
+        "market_cap_cr":round((_s(q.get("market_cap")))/1e7,0),
+        "roe":round(_s(q.get("roe"))*100,1),
+        "revenue_growth":round(_s(q.get("revenue_growth"))*100,1),
+        "earnings_growth":round(_s(q.get("earnings_growth"))*100,1),
+        "op_margin":round(_s(q.get("op_margin"))*100,1),
+        "dividend_yield":round(_s(q.get("dividend_yield"))*100,2),
+        "de_ratio":round(_s(q.get("de_ratio")),2),
+        "target_mean":q.get("target_mean"),
+        "recommendation":q.get("recommendation","N/A"),
+        "50dma":q.get("50dma"),
+        "200dma":q.get("200dma"),
     })
+    dma200 = result.get("200dma")
+    if dma200 and price:
+        result["above_200dma"] = price > dma200
+        result["vs_200dma_pct"] = round((price-dma200)/dma200*100,1)
 
-    # Time series for 52W range
-    ts = td("time_series",{"symbol":f"{sym}:NSE","interval":"1day","outputsize":252})
-    if ts.get("values"):
-        closes=[_s(v["close"]) for v in ts["values"] if v.get("close")]
-        vols=[_s(v.get("volume",0)) for v in ts["values"]]
-        if closes:
-            hi,lo=max(closes),min(closes)
-            result.update({
-                "52w_high":round(hi,2),"52w_low":round(lo,2),
-                "52w_range_pct":round((price-lo)/(hi-lo)*100,1) if hi>lo else 50,
-                "pct_from_52w_high":round((hi-price)/hi*100,1) if hi else 0,
-            })
-        if len(vols)>=20:
-            result["volume_ratio"]=round(sum(vols[:5])/5/(sum(vols[:20])/20),2)
-
-    # RSI
-    rsi_d=td("rsi",{"symbol":f"{sym}:NSE","interval":"1day","time_period":14,"outputsize":1})
-    if rsi_d.get("values"): result["rsi"]=round(_s(rsi_d["values"][0]["rsi"]),1)
-
-    # MACD
-    macd_d=td("macd",{"symbol":f"{sym}:NSE","interval":"1day","fast_period":12,"slow_period":26,"signal_period":9,"outputsize":1})
-    if macd_d.get("values"):
-        v=macd_d["values"][0]
-        m,s=_s(v.get("macd")),_s(v.get("macd_signal"))
-        result["macd_crossover"]="Bullish" if m>s else "Bearish"
-
-    # EMA 200
-    ema_d=td("ema",{"symbol":f"{sym}:NSE","interval":"1day","time_period":200,"outputsize":1})
-    if ema_d.get("values"):
-        ema=_s(ema_d["values"][0]["ema"])
-        result.update({"200dma":round(ema,2),"above_200dma":price>ema,
-                       "vs_200dma_pct":round((price-ema)/ema*100,1)})
-
-    # Statistics (fundamentals)
-    stats=td("statistics",{"symbol":f"{sym}:NSE"})
-    if stats and "valuations_metrics" in stats:
-        vm=stats["valuations_metrics"]
-        fs=stats.get("financials",stats.get("financial_summary",{}))
-        result.update({
-            "pe_ratio":_s(vm.get("pe_ratio") or vm.get("trailing_pe")) or None,
-            "peg_ratio":_s(vm.get("peg_ratio")) or None,
-            "market_cap_cr":round(_s(vm.get("market_capitalization"))/1e7,0),
-            "roe":round(_s(fs.get("return_on_equity_ttm"))*100,1),
-            "revenue_growth":round(_s(fs.get("quarterly_revenue_growth_yoy"))*100,1),
-            "earnings_growth":round(_s(fs.get("quarterly_earnings_growth_yoy"))*100,1),
-            "op_margin":round(_s(fs.get("operating_margin_ttm"))*100,1),
-            "dividend_yield":round(_s(fs.get("forward_annual_dividend_yield"))*100,2),
-        })
-
-    # Profile
-    prof=td("profile",{"symbol":f"{sym}:NSE"})
-    if prof and prof.get("name"):
-        result.update({"name":prof.get("name",sym),"sector":prof.get("sector","Unknown"),
-                       "industry":prof.get("industry_group",prof.get("industry","Unknown"))})
+    # 52W range from Yahoo
+    try:
+        yf_url = f"https://query2.finance.yahoo.com/v8/finance/chart/{sym}.NS?interval=1d&range=1y"
+        yr = SESSION.get(yf_url, timeout=12)
+        if yr.status_code == 200:
+            cdata = yr.json().get("chart",{}).get("result",[{}])[0]
+            closes = cdata.get("indicators",{}).get("quote",[{}])[0].get("close",[])
+            closes = [c for c in closes if c]
+            if closes:
+                hi,lo = max(closes),min(closes)
+                result.update({
+                    "52w_high":round(hi,2),"52w_low":round(lo,2),
+                    "52w_range_pct":round((price-lo)/(hi-lo)*100,1) if hi>lo else 50,
+                    "pct_from_52w_high":round((hi-price)/hi*100,1) if hi else 0,
+                })
+                # RSI calculation
+                import statistics
+                if len(closes)>14:
+                    gains,losses=[],[]
+                    for i in range(1,len(closes)):
+                        d=closes[i]-closes[i-1]
+                        gains.append(max(d,0)); losses.append(max(-d,0))
+                    ag=sum(gains[-14:])/14; al=sum(losses[-14:])/14
+                    result["rsi"]=round(100-(100/(1+ag/al)) if al>0 else 100,1)
+                # MACD
+                if len(closes)>=26:
+                    def ema(data,n):
+                        k=2/(n+1); e=data[0]
+                        for x in data[1:]: e=x*k+e*(1-k)
+                        return e
+                    m=ema(closes,12)-ema(closes,26)
+                    result["macd_crossover"]="Bullish" if m>0 else "Bearish"
+    except: pass
 
     # Derived fields
     de=result.get("de_ratio",0) or 0
